@@ -1,0 +1,139 @@
+#!/bin/bash
+#
+# Copyright 2016 Advanced Micro Devices, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+# THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+
+set -e
+
+REPOSITORY="/var/opt/amdgpu-pro-local"
+
+usage() {
+	cat <<END_USAGE
+Usage: $PROG [options...]
+
+Options:
+  -h|--help  display this help message
+  --px       PX platform support
+
+  Unless the -h|--help option is given, 'apt-get' options may be present.
+
+END_USAGE
+}
+
+function stderr() {
+	cat - 1>&2
+}
+
+function os_release() {
+	[[ -r  /etc/os-release ]] && . /etc/os-release
+
+	case "$ID" in
+	ubuntu)
+		PACKAGES="amdgpu-pro amdgpu-pro-lib32 amdgpu-pro-dkms"
+		;;
+	steamos)
+		PACKAGES="amdgpu-pro-driver amdgpu-pro-lib32 "`
+			`"glx-alternative-amdgpu-pro amdgpu-pro-dkms"
+		;;
+	*)
+		echo "Unsupported OS" | stderr
+		exit 1
+		;;
+	esac
+}
+
+function source_list() {
+	local dir etc sourceparts
+
+	eval $(apt-config shell dir Dir)
+	eval $(apt-config shell etc Dir::Etc)
+	eval $(apt-config shell sourceparts Dir::Etc::sourceparts)
+
+	echo ${dir}${etc}${sourceparts}/amdgpu-pro.list
+}
+
+function amdgpu_pro_install() {
+	local src=$(cd ${0%/*} && pwd -P)
+	local index=$src/Packages
+
+	amdgpu_pro_uninstall $@
+
+	if [[ -r $index ]]; then
+		$SUDO mkdir -p $REPOSITORY && $SUDO cp -af $src/* $_
+		$SUDO ln -s $_/$PROG $SBIN/${PROG%-*}-uninstall
+
+		echo "deb [ trusted=yes ] file:$REPOSITORY/ ./" | \
+			$SUDO tee $(source_list)
+		$SUDO apt-get update ||:
+		$SUDO apt-get $@ install $PACKAGES
+	fi
+}
+
+function amdgpu_pro_uninstall() {
+	local p
+	local installed=()
+
+	[[ -r "$(source_list)" ]] || return 0
+
+	for p in $(cat $REPOSITORY/Packages | awk '{
+		if ($1 == "Package:")
+			p = $2;
+		else if ($1 == "Architecture:")
+			print p ":" $2
+	}')
+	do
+		if dpkg -s $p >/dev/null 2>&1; then
+			installed+=($p)
+		fi
+	done
+
+	if [[ ${#installed[@]} -ne 0 ]]; then
+		$SUDO apt-get $@ remove --purge ${installed[@]}
+	fi
+
+	$SUDO rm -rf $SBIN/${PROG%-*}-uninstall $(source_list) $REPOSITORY
+	$SUDO apt-get update ||:
+}
+
+PROG=${0##*/}
+SUDO=$([[ $(id -u) -ne 0 ]] && echo "sudo" ||:)
+SBIN="/usr/bin"
+os_release
+
+while (($#))
+do
+	case "$1" in
+	-h|--help)
+		usage
+		exit 0
+		;;
+	--px)
+		PACKAGES="$PACKAGES xserver-xorg-video-modesetting-amdgpu-pro"
+		shift
+		;;
+	*)
+		ARGS+="$1 "
+		shift
+		;;
+	esac
+done
+
+set -- $ARGS
+amdgpu_pro_${0##*-} $@
